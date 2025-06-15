@@ -1,0 +1,253 @@
+---
+title: "DATA612Project2"
+author: "Semyon Toybis"
+format: html
+editor: visual
+---
+
+## Project 2
+
+Project 2 requires implementing two of content-based filtering, user-user collaborate filtering, or item-item collaborative filtering models on a data set of choice.
+
+I will work with the MovieLens small data set, saved in my Github repository.
+
+Below I load the necessary libraries and import the data set
+
+```{r, message=FALSE}
+library(tidyverse)
+library(recommenderlab)
+library(superml)
+```
+
+```{r, message=FALSE}
+movies <- read_csv('https://raw.githubusercontent.com/stoybis/DATA612/refs/heads/main/Project2/movies.csv')
+
+ratings <- read_csv('https://raw.githubusercontent.com/stoybis/DATA612/refs/heads/main/Project2/ratings.csv')
+```
+
+### Exploratory Analysis
+
+```{r}
+head(movies)
+```
+
+```{r}
+head(ratings)
+```
+
+```{r}
+length(unique(movies$movieId))
+length(unique(ratings$userId))
+length(unique(ratings$movieId))
+```
+
+There are more movies than there are rated movies - thus I will subset the movie data for movies that were rated
+
+```{r}
+movies <- movies |> filter(movieId %in% ratings$movieId)
+```
+
+Below is the distribution of ratings:
+
+```{r}
+ratings |> ggplot(aes(x = '', y= rating)) + geom_boxplot() +
+ stat_summary(fun = mean, geom = 'point', shape = 4, size = 5, color = 'red') + ggtitle('Distribution of Movie Ratings') + theme_minimal()
+```
+
+Below is the distribution of the amount of movies that each viewer has rated:
+
+```{r}
+ratings |> group_by(userId) |> summarise(num_ratings = n_distinct(movieId)) |>
+  ggplot(aes(x = num_ratings, y ='')) + geom_boxplot() +
+   stat_summary(fun = mean, geom = 'point', shape = 4, size = 5, color = 'red') + ggtitle('Distribution of Ratings per User') + theme_minimal()
+```
+
+The average movie rating is 3.5 and there is a long tail of users who have a large amount of ratings, while the average is 165:
+
+```{r}
+ratings |> group_by(userId) |> summarise(num_ratings = n_distinct(movieId)) |> select(num_ratings) |> summary()
+```
+
+### Data Prep
+
+First, I transform the ratings data into a matrix that can be used with recommenderlab functions
+
+```{r}
+ratings_matrix <- ratings |> select(-timestamp) |>
+  pivot_wider(names_from = movieId, values_from = rating)
+
+ratings_matrix <- as.matrix(ratings_matrix[,-1])
+ratings_matrix <- as(ratings_matrix, 'realRatingMatrix')
+
+```
+
+```{r}
+ratings_matrix
+```
+
+Next, I create an item matrix which describes each item (movie) based on its features (genre). Features take 0 or 1 values if the genre applies to the movie. I use the CountVectorizer function from the superml package.
+
+```{r}
+cfv <- CountVectorizer$new()
+
+item_feature_matrix <- cfv$fit_transform(movies$genres)
+item_feature_matrix <- as(item_feature_matrix, 'binaryRatingMatrix')
+```
+
+```{r}
+item_feature_matrix
+```
+
+### Modeling
+
+I will compare item based and user based collaborative filtering, examining which algorithm results in the lowest error when comparing actual ratings vs predicted ratings. Both models will be compared to the "RANDOM" model in the recommenderlab package, which generates random recommendations. This baseline is necessary to have a point of comparison in order to determine if the models are better than guessing.
+
+User based collaborative filtering groups users into neighborhoods based on similarity of tastes. In other words, users who rate items similarly have similar tastes and thus a user can be recommended an item that other uses in the neighborhood enjoyed.
+
+Item based collaborative filtering evaluates similarity between items and recommends items that are similar to prior items that a user enjoyed.
+
+In addition to comparing these algorithms, I will also compare performance by altering the number of neighbors the algorithms use to create groups of similar users/items. The standard value for UBCF is 25 and 30 for IBCF. I will compare these to values of 50 (broader neighborhood). Furthermore, I will also train these models with similarity measured by pearson correlation to see how it compares to the standard similarity measure of cosine similarity.
+
+#### Evaluation Scheme
+
+First, I normalize the ratings matrix. This is done to remove user bias.
+
+```{r}
+ratings_matrix_centered <- normalize(ratings_matrix, 'center')
+```
+
+```{r}
+set.seed(123)
+eval_scheme <- evaluationScheme(ratings_matrix_centered, method = 'split',
+                                train = 0.8, given = 10)
+```
+
+#### UBCF
+
+Below I train two user-based collaborative filtering models: one with the standard neighborhood of 25 and one with a neighborhood of 50.
+
+```{r, message = FALSE}
+ubcf25 <- Recommender(getData(eval_scheme, 'train'),'UBCF')
+ubcf50 <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                      parameter = list(nn=50))
+
+```
+
+Next, I compute the predicted ratings for the test data
+
+```{r}
+ubcf25_pred <- predict(ubcf25, getData(eval_scheme, 'known'), type = 'ratings')
+
+ubcf50_pred <- predict(ubcf50, getData(eval_scheme, 'known'), type = 'ratings')
+```
+
+Below I calculate the error:
+
+```{r}
+error_table <- rbind(
+  UBCF25 = calcPredictionAccuracy(ubcf25_pred, getData(eval_scheme,'unknown')),
+  UBCF50 =  calcPredictionAccuracy(ubcf50_pred, getData(eval_scheme,'unknown'))
+)
+```
+
+#### IBCF
+
+Below I train two item-based collaborative filtering models: one with the standard neighborhood of 30 and one with a neighborhood of 50.
+
+```{r, message = FALSE}
+ibcf30 <- Recommender(getData(eval_scheme, 'train'),'IBCF')
+ibcf50 <- Recommender(getData(eval_scheme, 'train'),'IBCF',
+                      parameter =list(k=50))
+```
+
+Next, I compute the predicted ratings for the test data
+
+```{r}
+ibcf30_pred <- predict(ibcf30, getData(eval_scheme, 'known'), type = 'ratings')
+
+ibcf50_pred <- predict(ibcf50, getData(eval_scheme, 'known'), type = 'ratings')
+```
+
+Below I calculate the error:
+
+```{r}
+error_table <- rbind(error_table,
+  IBCF30 = calcPredictionAccuracy(ibcf30_pred, getData(eval_scheme,'unknown')),
+  IBCF50 =  calcPredictionAccuracy(ibcf50_pred, getData(eval_scheme,'unknown'))
+)
+```
+
+#### Correlation
+
+Below I train an item based and user based collaborative filtering algorithm where similarity is measured via pearson correlation
+
+```{r}
+ubcfPearson <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                           parameter = list(method = 'pearson'))
+ibcfPearson <- Recommender(getData(eval_scheme, 'train'),'IBCF',
+                      parameter = list(method = 'pearson'))
+```
+
+Next, I compute the predicted ratings for the test data
+
+```{r}
+ubcfPearson_pred <- predict(ubcfPearson, getData(eval_scheme, 'known'), type = 'ratings')
+
+ibcfPearson_pred <- predict(ibcfPearson, getData(eval_scheme, 'known'), type = 'ratings')
+```
+
+Below I calculate the error:
+
+```{r}
+error_table <- rbind(error_table,
+  UBCFPearson = calcPredictionAccuracy(ubcfPearson_pred, getData(eval_scheme,'unknown')),
+  IBCFPearson =  calcPredictionAccuracy(ibcfPearson_pred, getData(eval_scheme,'unknown'))
+)
+```
+
+#### Random
+
+Last, I repeat the above steps for a random model, which will be used for baseline comparison purposes
+
+```{r, message=FALSE}
+set.seed(123)
+random <- Recommender(getData(eval_scheme, 'train'),'Random')
+
+random_pred <- predict(random, getData(eval_scheme, 'known'), type = 'ratings')
+
+
+error_table <- rbind(error_table,
+  Random = calcPredictionAccuracy(random_pred, getData(eval_scheme,'unknown'))
+)
+```
+
+### Summary
+
+```{r}
+error_table <- error_table |> as.data.frame() |> rownames_to_column('Model')
+```
+
+```{r}
+error_table_long <- error_table |> pivot_longer(!Model, names_to = 'Metric',
+                                                values_to = 'Value')
+```
+
+```{r}
+error_table_long$Model <- factor(error_table_long$Model,
+                                 levels = c('IBCF30','IBCF50',
+                                            'UBCF25','UBCF50',
+                                            'UBCFPearson','IBCFPearson',
+                                            'Random'))
+```
+
+```{r}
+error_table_long |> ggplot(aes(x=Metric, y = Value, fill = Model)) +
+  geom_bar(position = 'dodge', stat = 'identity') +
+  ggtitle('Error Metrics by Model') + theme_minimal()
+```
+
+```{r}
+error_table
+```
+
+As seen above, both user-based collaborative-filtering and item-based collaborative-filtering performed better than the random model. The best performing model was user-based collaborative filtering with similarity measured via Pearson correlation. Furthermore, using larger neighborhoods result in slightly better performance. That said, performance among all of the UBCF and IBCF models was fairly similar. It is possible that changing neighborhood sizes more substantially (e.g. 100 neighbors) may have resulted in more differentiated performance (possibly worse since similarity between the users or items becomes diluted). Future research would include parameter tuning on model parameters such as neighborhood size, evaluating different similarity metrics (e.g. Jaccard). Additionally, the Item-Feature matrix was not utilized but would have been necessary in implementing a content-based algorithm; additional research can compare the above algorithms to a content-based algorithm.
