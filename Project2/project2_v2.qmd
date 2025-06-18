@@ -65,7 +65,20 @@ ratings |> group_by(userId) |> summarise(num_ratings = n_distinct(movieId)) |>
 The average movie rating is 3.5 and there is a long tail of users who have a large amount of ratings, while the average is 165:
 
 ```{r}
-ratings |> group_by(userId) |> summarise(num_ratings = n_distinct(movieId)) |> select(num_ratings) |> summary()
+ratings |> group_by(userId) |> summarise(num_ratings = n()) |> select(num_ratings) |> summary()
+```
+
+Below is an image that shows the distribution of the number of ratings per movie:
+
+```{r}
+
+ratings |> group_by(movieId) |> summarise(num_ratings = n()) |>
+  ggplot(aes(x = num_ratings, y ='')) + geom_boxplot() +
+   stat_summary(fun = mean, geom = 'point', shape = 4, size = 5, color = 'red') + ggtitle('Distribution of Ratings per Movie') + theme_minimal()
+```
+
+```{r}
+ratings |> group_by(movieId) |> summarise(num_ratings = n()) |> select(num_ratings) |> summary()
 ```
 
 ### Data Prep
@@ -85,6 +98,12 @@ ratings_matrix <- as(ratings_matrix, 'realRatingMatrix')
 ratings_matrix
 ```
 
+I now have a ratings matrix where each row is a user and each column is a movie and each viewer's ratings for a movie are populated in the respective column. This is a sparse matrix (many values are NA) and only non-NA values are stored explicitly for efficient handling. Below is a snippet of the matrix
+
+```{r}
+getRatingMatrix(ratings_matrix[1:7,1:7])
+```
+
 Next, I create an item matrix which describes each item (movie) based on its features (genre). Features take 0 or 1 values if the genre applies to the movie. I use the CountVectorizer function from the superml package.
 
 ```{r}
@@ -98,23 +117,29 @@ item_feature_matrix <- as(item_feature_matrix, 'binaryRatingMatrix')
 item_feature_matrix
 ```
 
+```{r}
+head(as(item_feature_matrix, 'matrix'))
+```
+
 ### Modeling
 
 I will compare item based and user based collaborative filtering, examining which algorithm results in the lowest error when comparing actual ratings vs predicted ratings. Both models will be compared to the "RANDOM" model in the recommenderlab package, which generates random recommendations. This baseline is necessary to have a point of comparison in order to determine if the models are better than guessing.
 
-User based collaborative filtering groups users into neighborhoods based on similarity of tastes. In other words, users who rate items similarly have similar tastes and thus a user can be recommended an item that other uses in the neighborhood enjoyed.
+User based collaborative filtering groups users into neighborhoods based on similarity of tastes. In other words, users who rate items similarly have similar tastes and thus a user can be recommended an item that other uses in the neighborhood enjoyed. Similarity can be defined via different metrics, such as cosine similarity (default), pearson correlation, or Jaccard distance. The metric is calculated using the row vectors of users from the ratings matrix based on items which were rated by all users in the comparison. A neighborhood of similar users is determined by either taking the k-nearest neighbors in the vector space or by using a similarity threshold determined by the user. This neighborhood of users is then used to either recommend a new item to user within the neighborhood who hasn't interacted with the item but that other users in the neighborhood enjoyed. Additionally, the neighborhood rating for an item (e.g. the average rating of the users for an item) can be used to predict the rating that a user from the neighborhood would give to an item that he has not interacted with.
 
-Item based collaborative filtering evaluates similarity between items and recommends items that are similar to prior items that a user enjoyed.
+Item based collaborative filtering evaluates similarity between items and recommends items that are similar to prior items that a user enjoyed. This is done by creating an item to item similarity matrix using one of the aforementioned similarity measures. Instead of comparing rows of users (as in user based collaborative filtering), columns of items are evaluated for similarity. Predictions for ratings for an un-rated item for a user are made by taking the weighted average of similarities and ratings for other similar items that the user has rated.
 
 In addition to comparing these algorithms, I will also compare performance by altering the number of neighbors the algorithms use to create groups of similar users/items. The standard value for UBCF is 25 and 30 for IBCF. I will compare these to values of 50 (broader neighborhood). Furthermore, I will also train these models with similarity measured by pearson correlation to see how it compares to the standard similarity measure of cosine similarity.
 
 #### Evaluation Scheme
 
-First, I normalize the ratings matrix. This is done to remove user bias.
+First, I normalize the ratings matrix. This is done to remove user bias by subtracting the average of every row from every observation within the row.
 
 ```{r}
 ratings_matrix_centered <- normalize(ratings_matrix, 'center')
 ```
+
+Next, I create an evaluation scheme. This is an object in recommendation that stores instructions on how to split the data into training and test sets and evaluate results. Below I split the normalized ratings matrix via an 80/20 split. The given parameter is used in evaluating performance on the test set. The algorithm is provided the amount of items rated by the user in the test set corresponding to the given parameter, while the rest of the users ratings (total user's ratings in the test set minus given parameter) are held out for comparing to model predictions. The difference between the predicted values and the actual values are used to calculate error metrics.
 
 ```{r}
 set.seed(123)
@@ -250,4 +275,20 @@ error_table_long |> ggplot(aes(x=Metric, y = Value, fill = Model)) +
 error_table
 ```
 
-As seen above, both user-based collaborative-filtering and item-based collaborative-filtering performed better than the random model. The best performing model was user-based collaborative filtering with similarity measured via Pearson correlation. Furthermore, using larger neighborhoods result in slightly better performance. That said, performance among all of the UBCF and IBCF models was fairly similar. It is possible that changing neighborhood sizes more substantially (e.g. 100 neighbors) may have resulted in more differentiated performance (possibly worse since similarity between the users or items becomes diluted). Future research would include parameter tuning on model parameters such as neighborhood size, evaluating different similarity metrics (e.g. Jaccard). Additionally, the Item-Feature matrix was not utilized but would have been necessary in implementing a content-based algorithm; additional research can compare the above algorithms to a content-based algorithm.
+As seen above, both user-based collaborative-filtering and item-based collaborative-filtering performed better than the random model. The best performing model was user-based collaborative filtering with similarity measured via Pearson correlation. Furthermore, using larger neighborhoods result in slightly better performance. That said, performance among all of the UBCF and IBCF models was fairly similar. It is possible that changing neighborhood sizes more substantially (e.g. 100 neighbors) may have resulted in more differentiated performance (possibly worse since similarity between the users or items becomes diluted).
+
+One challenge for collaborative based filtering algorithms is the cold-start problem, which is finding recommendations for new users or new items which have few ratings. The user with the least amount of ratings in this data set had 20 ratings and many users had more ratings. However, some movies had as few as one rating which could make it difficult to get an accurate sense of similarity for movies with few reviews. This could be one of the reasons by the user-based algorithms performed slightly better. Additionally, incorporating content based filtering could allow for a more comprehensive assessment of movie similarity as movies could be compared on features such as genres or descriptions rather than ratings.
+
+Number of ratings per user:
+
+```{r}
+ratings |> group_by(userId) |> summarise(num_ratings_per_user = n()) |> select(num_ratings_per_user) |> psych::describe()
+```
+
+Number of ratings per movie:
+
+```{r}
+ratings |> group_by(movieId) |> summarise(num_ratings_per_movie = n()) |> select(num_ratings_per_movie) |> psych::describe()
+```
+
+Future research would include parameter tuning on model parameters such as neighborhood size, evaluating different similarity metrics (e.g. Jaccard). Additionally, the Item-Feature matrix was not utilized but would have been necessary in implementing a content-based algorithm; additional research can compare the above algorithms to a content-based algorithm.
