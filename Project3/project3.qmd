@@ -1,0 +1,233 @@
+---
+title: "DATA612Project3"
+author: "Semyon Toybis"
+format: html
+editor: visual
+---
+
+## Project 3
+
+Project 3 requires implementing a matrix factorization technique into a recommender system.
+
+I will build off my work from [Project 2](https://rpubs.com/stoybis/DATA612Project2), where I implemented a variety of recommender algorithms on the MovieLens small data set.
+
+```{r, message=FALSE}
+library(tidyverse)
+library(recommenderlab)
+library(superml)
+```
+
+### Data Prep
+
+```{r, message=FALSE}
+movies <- read_csv('https://raw.githubusercontent.com/stoybis/DATA612/refs/heads/main/Project2/movies.csv')
+
+ratings <- read_csv('https://raw.githubusercontent.com/stoybis/DATA612/refs/heads/main/Project2/ratings.csv')
+```
+
+As discussed in Project 2, there are more movies than there are rated movies - thus I will subset the movie data for movies that were rated
+
+```{r}
+movies <- movies |> filter(movieId %in% ratings$movieId)
+```
+
+Below I recreate the ratings matrix from Project2
+
+```{r}
+ratings_matrix <- ratings |> select(-timestamp) |>
+  pivot_wider(names_from = movieId, values_from = rating)
+
+ratings_matrix <- as.matrix(ratings_matrix[,-1])
+ratings_matrix <- as(ratings_matrix, 'realRatingMatrix')
+
+```
+
+```{r}
+ratings_matrix
+```
+
+This is now a ratings matrix where each row is a user and each column is a movie and each viewer's ratings for a movie are populated in the respective column. This is a sparse matrix (many values are NA) and only non-NA values are stored explicitly for efficient handling. Below is a snippet of the matrix
+
+```{r}
+getRatingMatrix(ratings_matrix[1:7,1:7])
+```
+
+### Modelling
+
+#### Evaluation Scheme
+
+As in project 2, I normalize the ratings matrix to remove user bias by subtracting the average of every row from every observation within the row.
+
+```{r}
+ratings_matrix_centered <- normalize(ratings_matrix, 'center')
+```
+
+Next, I create an evaluation scheme. This is an object in recommendation that stores instructions on how to split the data into training and test sets and evaluate results. Below I split the normalized ratings matrix via an 80/20 split. The given parameter is used in evaluating performance on the test set. The algorithm is provided the amount of items rated by the user in the test set corresponding to the given parameter, while the rest of the users ratings (total user's ratings in the test set minus given parameter) are held out for comparing to model predictions. The difference between the predicted values and the actual values are used to calculate error metrics.
+
+```{r}
+set.seed(123)
+eval_scheme <- evaluationScheme(ratings_matrix_centered, method = 'split',
+                                train = 0.8, given = 10)
+```
+
+#### Project 2 Models
+
+Below I recreate the user based and item based models from project 2. The methodology is discussed in detail in my [project2 RPubs](https://rpubs.com/stoybis/DATA612Project2)
+
+```{r, warning=FALSE}
+
+#user based collaborative filtering with different neighborhood sizes
+ubcf25 <- Recommender(getData(eval_scheme, 'train'),'UBCF')
+ubcf50 <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                      parameter = list(nn=50))
+
+
+#predicted ratings for users using the above algorithms
+ubcf25_pred <- predict(ubcf25, getData(eval_scheme, 'known'), type = 'ratings')
+
+ubcf50_pred <- predict(ubcf50, getData(eval_scheme, 'known'), type = 'ratings')
+
+#error metrics for above algorithsms
+error_table <- rbind(
+  UBCF25 = calcPredictionAccuracy(ubcf25_pred, getData(eval_scheme,'unknown')),
+  UBCF50 =  calcPredictionAccuracy(ubcf50_pred, getData(eval_scheme,'unknown'))
+)
+
+#item based collaborative filtering with different neighborhood sizes
+ibcf30 <- Recommender(getData(eval_scheme, 'train'),'IBCF')
+ibcf50 <- Recommender(getData(eval_scheme, 'train'),'IBCF',
+                      parameter =list(k=50))
+
+#predicted ratings for users using the above algorithms
+ibcf30_pred <- predict(ibcf30, getData(eval_scheme, 'known'), type = 'ratings')
+
+ibcf50_pred <- predict(ibcf50, getData(eval_scheme, 'known'), type = 'ratings')
+
+#error metrics for above algorithms
+error_table <- rbind(error_table,
+  IBCF30 = calcPredictionAccuracy(ibcf30_pred, getData(eval_scheme,'unknown')),
+  IBCF50 =  calcPredictionAccuracy(ibcf50_pred, getData(eval_scheme,'unknown'))
+)
+
+
+#user and item based with correlation as similarity measure
+ubcfPearson <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                           parameter = list(method = 'pearson'))
+ibcfPearson <- Recommender(getData(eval_scheme, 'train'),'IBCF',
+                      parameter = list(method = 'pearson'))
+
+#predictions
+ubcfPearson_pred <- predict(ubcfPearson, getData(eval_scheme, 'known'), type = 'ratings')
+
+ibcfPearson_pred <- predict(ibcfPearson, getData(eval_scheme, 'known'), type = 'ratings')
+
+#error metrics
+error_table <- rbind(error_table,
+  UBCFPearson = calcPredictionAccuracy(ubcfPearson_pred, getData(eval_scheme,'unknown')),
+  IBCFPearson =  calcPredictionAccuracy(ibcfPearson_pred, getData(eval_scheme,'unknown'))
+)
+```
+
+#### SVD
+
+Singular Value Decomposition (SVD) is a matrix factorization technique that is similar to principal component analysis (PCA) in that it seeks to represent the ratings matrix in a reduced dimension by explaining variability via latent factors. Specifically, SVD states that a matrix A can be expressed as the product of three separate matrices:
+
+$$
+A \;=\; U \,\Sigma\, V^T
+$$
+
+In the above, A is an m row by n column matrix and:
+
+-   U is an m by r matrix
+
+-   Sigma is an r by r matrix
+
+-   V is is an n by r matrix
+
+While interpretability can get challenging as the size of the matrices grows, U can be though of as a "User to Concept" matrix, V as an "Item to Concept" matrix, and Sigma is a diagonal matrix where the singular values on the diagonal, all positive values sorted in descending order, explain the strength of each concept.[^1]
+
+[^1]: <https://www.youtube.com/watch?v=P5mlg91as1c>
+
+Similar to PCA, the variance in the rating matrix can be explained by projecting the ratings data onto a new axis that minimizes the sum of squared errors of the axis versus the actual points. Some of the singular values in the matrix sigma have low strength and do not explain much variance in the data and thus can be dropped. The resulting matrices, (U, Sigma, and V) are smaller in size than matrix A but when multiplied can approximate A fairly closely depending on how many singular values were included (it is typically suggested to include enough singular values to represent 80-90% of the original matrix).
+
+From a recommendation system perspective, this means that the matrix approximated by SVD can be used to predict what rating a viewer would give to a movie that they have not seen: SVD approximates the known values in the original matrix and produces ratings for movies that have not been rated. Additionally, multiplying a user's ratings by the matrix V creates a profile of the user and how strongly they rate on certain concepts. This can then be used to serve recommendations of items that rate strongly on the same concepts as the user.[^2]
+
+[^2]: <https://www.youtube.com/watch?v=K38wVcdNuFc>
+
+I will use the "recommenderlab" package to create an SVD recommendation algorithm. The package uses the process above to create an SVD approximation of the ratings matrix; however this requires no missing values in the ratings matrix. Thus, recommenderlab uses column-mean imputation to fill in NaNs in the original ratings matrix in order to create an SVD factorization. The matrix resulting from SVD factorization is used to predict ratings (e.g. the prediction for a user for a certain item will be the corresponding rating for that user and item pair in the approximated matrix).
+
+The algorithm has three parameters: k, maxiter, and normalize.
+
+```{r}
+recommenderRegistry$get_entry("SVD", dataType = "realRatingMatrix")
+```
+
+K corresponds to the number of latent factors to include, with a default value of 10. Maxiter (default value of 100) corresponds to the number of iterations required to estimate the three matrices that approximate the original ratings matrix. Recommenderlab uses the "irlba" package to compute the partial SVD decomposition by iteratively estimating the singular values in matrix Sigma until the max number of iterations has been reached or a tolerance convergence value has been reached.[^3] Lastly, normalize refers to whether a matrix should be normalized by subtracting row averages from observations (which I have already done).
+
+[^3]: <https://cran.r-project.org/web/packages/irlba/vignettes/irlba.pdf>
+
+I will evaluate the algorithm using a k of 10 and a k of 50.
+
+```{r,warning=FALSE}
+svd10 <- Recommender(getData(eval_scheme, 'train'),'SVD')
+svd50 <- Recommender(getData(eval_scheme, 'train'),'SVD',
+                     parameter =list(k=50))
+
+```
+
+```{r}
+svd10_pred <- predict(svd10, getData(eval_scheme, 'known'), type = 'ratings')
+
+svd50_pred <- predict(svd50, getData(eval_scheme, 'known'), type = 'ratings')
+```
+
+```{r}
+error_table <- rbind(error_table,
+  svd10 = calcPredictionAccuracy(svd10_pred, getData(eval_scheme,'unknown')),
+  svd50 = calcPredictionAccuracy(svd50_pred, getData(eval_scheme,'unknown'))
+)
+```
+
+#### Benchmark
+
+Lastly, I recreate the benchmark model using random suggestions for comparison purposes
+
+```{r,warning=FALSE}
+set.seed(123)
+random <- Recommender(getData(eval_scheme, 'train'),'Random')
+
+random_pred <- predict(random, getData(eval_scheme, 'known'), type = 'ratings')
+
+
+error_table <- rbind(error_table,
+  Random = calcPredictionAccuracy(random_pred, getData(eval_scheme,'unknown'))
+)
+```
+
+### Summary
+
+```{r}
+error_table <- error_table |> as.data.frame() |> rownames_to_column('Model')
+
+error_table_long <- error_table |> pivot_longer(!Model, names_to = 'Metric',
+                                                values_to = 'Value')
+
+error_table_long$Model <- factor(error_table_long$Model,
+                                 levels = c('UBCF25','UBCF50',
+                                            'IBCF30','IBCF50',
+                                            'UBCFPearson',
+                                            'IBCFPearson', 'svd10',
+                                            'svd50', 'Random'))
+```
+
+```{r}
+error_table_long |> ggplot(aes(x=Metric, y = Value, fill = Model)) +
+  geom_bar(position = 'dodge', stat = 'identity') +
+  ggtitle('Error Metrics by Model') + theme_minimal()
+```
+
+```{r}
+error_table
+```
+
+Like in Project 2, User-Based Collaborative Filtering with Pearson Correlation as the similiarity measure was the best performing model. The SVD models performed worse than all of the user-based and item-based models. This could be because the ratings matrix was sparse and required a large amount of imputation in order to conduct matrix factorization. Collaborative filtering does not require imputing values and perhaps this leads to the out-performance as the algorithms simply picks up on item or user similarities based on the available data. Additionally, SVD with 50 latent factors had slightly better performance than SVD with 10 latent factors. It is possible that increasing the amount of latent factors even further could lead to better performance as the matrix has 9724 movies, a large amount that perhaps cannot be fully explained via 20 factors. However, increasing the amount of latent factors too much can lead to over-fiting and poor performance on the test-set. A way to verify this would be to perform parameter tuning on the k parameter via cross-validation.
