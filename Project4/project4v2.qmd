@@ -1,0 +1,253 @@
+---
+title: "Project4"
+author: "Semyon Toybis"
+format: html
+editor: visual
+---
+
+## Intro
+
+Project 4 requires evaluating recommender systems on both accuracy and metrics that evaluate diversity of recommendations such as serendipity, novelty, or diversity.
+
+For this assignment, I will work with the Jester5k data-set, which contains user ratings for jokes.
+
+```{r,message=FALSE}
+library(recommenderlab)
+library(tidyverse)
+```
+
+```{r}
+data('Jester5k')
+```
+
+## Exploratory Analysis
+
+```{r}
+Jester5k
+```
+
+The ratings matrix has ratings for 5000 users and 100 jokes. Ratings range from -10 (strong dislike) to +10 (strong preference). Below is a distribution of ratings:
+
+```{r}
+hist(as.vector(Jester5k@data),main = 'Ratings Distribution')
+```
+
+The data is centered at zero, which is equivalent to an average joke.
+
+Below is a distribution of the average joke rating:
+
+```{r}
+hist(colMeans(Jester5k),main = 'Distribution of Average Joke Rating')
+```
+
+The data is left skewed - most jokes are on average rated positively but there is a tail of jokes that have low average ratings.
+
+Below is the distribution of average rating per user:
+
+```{r}
+hist(rowMeans(Jester5k),main = 'Distribution of Average User Rating')
+```
+
+There are more users than jokes and the average is centered around zero, however there are right and left tails of both overly positive and overly negative users.
+
+Lastly, below is the distribution of the amount of ratings per joke:
+
+```{r}
+hist(colCounts(Jester5k), main='Distribution of the Amount of Ratings Per Joke')
+```
+
+and per user:
+
+```{r}
+hist(rowCounts(Jester5k), main='Distribution of the Amount of Ratings Per User')
+```
+
+```{r}
+psych::describe(rowCounts(Jester5k))
+```
+
+The average user had 72 ratings while the user with the least amount of ratings had 36. This is useful information for creating an evaluation scheme and determining the given parameter.
+
+## Objective
+
+The goal of recommender systems is to recommend new items to users that they will enjoy. There are a number of recommender algorithms that can be implemented to create recommendations and they can be evaluated for accuracy by evaluating their performance on offline data. For example, in the recommenderlab framework, a ratings matrix can be split into training sets (which are used to learn the recommender model) and test sets with a given parameter. In the test set, the recommender is given a certain amount of ratings for a user and then predicts the rating the user would give to the remaining hold out values. Alternatively, the recommender can create a top N recommendation list. These ratings or recommendations are then compared to the hold out ratings/items and can be evaluated for accuracy (via metrics such as RMSE, MAE, Accuracy, Precision, Recall, among others). The better the accuracy metric (e.g. lower RMSE or MAE, higher accuracy, precision, etc) the more closely the recommender was able to predict the hold out ratings or items.
+
+However, maximizing these metrics can have a drawback. For example, in item-based filtering, we may determine that a user has a preference for a certain type of movie (such as horror films). By maximizing accuracy metrics, our recommender may continue suggesting horror movies to the user, pigeonholing them into one genre. Eventually, the recommender may run out of horror movies to recommend. This can create a business problem, as the user may utilize the platform for horror movies only and may switch providers once he has exhausted the catalog. Thus, it is important to create a broader understanding of what other movies the user may be interested in (for example, sci-fi could have some overlap) by incorporating recommendations outside of the user's immediate preferences. In fact, certain papers have found that a recommendation list with moderate diversification was preferred by users even if it the list had individual items that were not preferred by the user.[^1]
+
+[^1]: "[Recommender systems: from algorithms to user experience](https://link.springer.com/content/pdf/10.1007/s11257-011-9112-x.pdf)" - Joseph A. Konstan, John Riedl
+
+For this project, I will evaluate an item-based and user-based collaborative filtering recommender and see how increasing the neighborhood size of comparison affects recommendation diversity.
+
+## Modeling
+
+This project will require predicting top N lists, rather than ratings prediction, as items will be also evaluated on similarity (or lack thereof).
+
+The recommenderlab package is able to generate topNLists by incorporating a goodRating. This is because recommenderlab evaluates topN lists as if they are binary classifiers, with items that are above the goodRating as relevant items (or positives) and items below as the irrelevant items (or negatives). In other words, recommenderlab transforms the ratings matrix into a binary matrix, which can then be used to calculate metrics such as true positives, true negatives, accuracy, precision, and recall, among others.
+
+Below I split the ratings matrix into a train and test set (offline data) with an 80/20 ratio. All but 10 ratings are held out from the recommender in the test set and the threshold for relevant and irrelevant jokes is set at zero.
+
+```{r}
+set.seed(123)
+eval_scheme <- evaluationScheme(Jester5k, method = 'split', train = 0.8,
+                                given = 10, goodRating = 0)
+```
+
+Next, I train a user based and item based collaborative filtering model.
+
+```{r}
+ubcf <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                    parameter = list(normalize='center'))
+ibcf <- Recommender(getData(eval_scheme,'train'),'IBCF',
+                    parameter = list(normalize='center'))
+
+```
+
+Next, I create topNList predictions, providing users with a recommendation of ten items that the algorithm thinks they will find relevant.
+
+```{r}
+ubcf_pred <- predict(ubcf, getData(eval_scheme,'known'),type='topNList',
+                     n=10)
+ibcf_pred <- predict(ibcf, getData(eval_scheme,'known'),type='topNList', n=10)
+
+
+```
+
+To increase the amount of diversity in predictions, I will try implementing a user-based recommender that has a larger neighborhood of similar users. I suspect that as the neigborhood size increase, prediction accuracy will decrease but diversity will increase.
+
+```{r}
+
+ubcf50 <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                      parameter = list(nn=50))
+
+ubcf100 <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                      parameter = list(nn=100))
+
+ubcf200 <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                      parameter = list(nn=200))
+
+ubcf300 <- Recommender(getData(eval_scheme, 'train'),'UBCF',
+                      parameter = list(nn=300))
+```
+
+```{r}
+ubcf50_pred <- predict(ubcf50, getData(eval_scheme,'known'),type='topNList',
+                     n=10)
+
+ubcf100_pred <- predict(ubcf100, getData(eval_scheme,'known'),type='topNList',
+                     n=10)
+
+ubcf200_pred <- predict(ubcf200, getData(eval_scheme,'known'),type='topNList',
+                     n=10)
+
+ubcf300_pred <- predict(ubcf300, getData(eval_scheme,'known'),type='topNList',
+                     n=10)
+```
+
+```{r}
+metrics_table <- rbind(
+  ubcf = calcPredictionAccuracy(ubcf_pred, getData(eval_scheme,'unknown'),goodRating=0,
+                       given=10),
+  ibcf = calcPredictionAccuracy(ibcf_pred, getData(eval_scheme,'unknown'),goodRating=0,
+                       given=10),
+  ubcf50 = calcPredictionAccuracy(ubcf50_pred, getData(eval_scheme,'unknown'),goodRating=0,
+                       given=10),
+  ubcf100 = calcPredictionAccuracy(ubcf100_pred, getData(eval_scheme,'unknown'),goodRating=0,
+                       given=10),
+  ubcf200 = calcPredictionAccuracy(ubcf200_pred, getData(eval_scheme,'unknown'),goodRating=0,
+                       given=10),
+  ubcf300 = calcPredictionAccuracy(ubcf300_pred, getData(eval_scheme,'unknown'),goodRating=0,
+                       given=10)
+)
+```
+
+I now have performance metrics on accuracy of recommendations. Now I need to compare diversity of recommendations.
+
+I can do this by looking at the similarity of the ten recommendations generated for each user.
+
+First, I extract the training set ratings matrix. I will need this to calculate similarities.
+
+```{r}
+train_set_matrix <- getData(eval_scheme,'train')
+```
+
+Next, I extract the recommendation lists from the predictions:
+
+```{r}
+ubcf_pred_list <- as(ubcf_pred, "list")
+ibcf_pred_list <- as(ibcf_pred, "list")
+ubcf50_pred_list <- as(ubcf50_pred, "list")
+ubcf100_pred_list <- as(ubcf100_pred, "list")
+ubcf200_pred_list <- as(ubcf200_pred, "list")
+ubcf300_pred_list <- as(ubcf300_pred, "list")
+```
+
+Next, I create a function to calculate the similarities of the items
+
+```{r}
+item_sim_function <- function(user_items) {
+  similarities_matrix <- similarity(train_set_matrix[,user_items], method = 'cosine',which='items')
+
+  mean(similarities_matrix)
+}
+```
+
+I then apply the function to the list of recommendations. This gives me the average similarity rating for the ten items recommended to each user.
+
+```{r}
+ubcf_pred_similarities <- sapply(ubcf_pred_list, item_sim_function)
+ibcf_pred_similarities <- sapply(ibcf_pred_list, item_sim_function)
+ubcf50_pred_similarities <- sapply(ubcf50_pred_list, item_sim_function)
+ubcf100_pred_similarities <- sapply(ubcf100_pred_list, item_sim_function)
+ubcf200_pred_similarities <- sapply(ubcf200_pred_list, item_sim_function)
+ubcf300_pred_similarities <- sapply(ubcf300_pred_list, item_sim_function)
+```
+
+I then take the average of all the values to aggregate into one metric. I then add this metric to the metrics table.
+
+```{r}
+ubcf_similarity <- mean(ubcf_pred_similarities)
+ibcf_similarity <- mean(ibcf_pred_similarities)
+ubcf50_similarity <- mean(ubcf50_pred_similarities)
+ubcf100_similarity <- mean(ubcf100_pred_similarities)
+ubcf200_similarity <- mean(ubcf200_pred_similarities)
+ubcf300_similarity <- mean(ubcf300_pred_similarities)
+```
+
+```{r}
+metrics_table <- as.data.frame(metrics_table)
+```
+
+```{r}
+similarity_values <- c(
+  ubcf    = ubcf_similarity,
+  ibcf    = ibcf_similarity,
+  ubcf50  = ubcf50_similarity,
+  ubcf100 = ubcf100_similarity,
+  ubcf200 = ubcf200_similarity,
+  ubcf300 = ubcf300_similarity
+)
+
+metrics_table <- cbind(
+  metrics_table,
+  similarity = similarity_values[rownames(metrics_table) ]
+)
+```
+
+## Evaluation
+
+```{r}
+metrics_table |> select(precision, recall,
+                        FPR, similarity)
+```
+
+The table above shows the performance metrics for the models. Interestingly, user based collaborative filtering with the largest user neighborhood size (300) had the highest precision (the proportion of all of the model's classifications that are actually positive). In the context of recommendations, this means that the ubcf300 model, with a precision of 0.68, had nearly 70% of its recommendations rated positively by the user. This model also had the highest recall (proportion of all actual positives that were classified correctly as positives), or in this context, this is the percentage of all positively rated jokes by the user that the model recommended.
+
+However, while the ubcf300 model had the best performance metrics, it had the worst diversity, as its similarity rating of recommendations was the highest. Conversely, the model with the worst accuracy performance metrics had the most diversity (ubcf with a similarity of 0.68).
+
+This result is different from what I initially suspected (worse performance but better diversity with larger neighborhoods). It seems that the smaller neighborhoods were overfitting the data (high variance, low bias) and the tipping point were performance degrades with larger neighborhood sizes was not yet reached.
+
+Interestingly, while ubcf300 had the worst diversity (nearly 25%, 1 minus the similarity), this is close to the 30% value that was mentioned in "Recommender systems: from algorithms to user experience" as the degree of moderate diversity that users prefer in their recommendation list. Thus, I would recommend the ubcf300 model as it had the best performance while still having a near optimal degree of diversity. However, one drawback of the recommenderlab approach to topN recommendations is that by converting it to a binary classifying problem (likes vs did not like), the recommender is not considering how much a user liked or disliked an item (i.e., it is treating extremely good and extremely bad recommendations the same).
+
+The ability to incorporate randomness or diversity directly into a recommender in the recommenderlab package is somewhat limited. Thus, future projects that seek to incorporate diversity directly into the model would likely be better off building the recommenders from scratch.
+
+Additionally, certain recommenders need to be evaluated in an online environment (i.e., when a model is in production). This naturally lends itself to a different set of metrics as the data is real time, such as click-through rate, which is the proportion of recommendations that a user went on to look at. Evaluating recommenders in an online environment would require A/B testing, where users are randomly split into two groups that have different recommender engines. Considering how to split the users is important, as any bias in the groups can skew the results of the testing (you want a truly random split such that both groups are fully representative of the user base). The performance of the recommenders are then evaluated on metrics like click through rate, with better metrics suggesting that the corresponding recommender is better. Additional metrics that can be considered include whether the customer purchased the recommended item, or how much time the customer spent watching or listening a movie or song, and whether they completed the whole movie or song. In the context of A/B testing, we would check which recommender had a higher percentage of purchases, or a higher percantage of full watches/listens.
