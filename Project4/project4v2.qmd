@@ -160,9 +160,13 @@ metrics_table <- rbind(
 )
 ```
 
+## Alternative metrics
+
 I now have performance metrics on accuracy of recommendations. Now I need to compare diversity of recommendations.
 
-I can do this by looking at the similarity of the ten recommendations generated for each user.
+### Diversity
+
+Diversity (measured as one minus similarity) can give insight into how diverse the ten recommendations for each user are. A higher diversity value corresponds to more dissimilarity between the recommended items.
 
 First, I extract the training set ratings matrix. I will need this to calculate similarities.
 
@@ -181,36 +185,36 @@ ubcf200_pred_list <- as(ubcf200_pred, "list")
 ubcf300_pred_list <- as(ubcf300_pred, "list")
 ```
 
-Next, I create a function to calculate the similarities of the items
+Next, I create a function to calculate the diversity of the items recommended to a user
 
 ```{r}
-item_sim_function <- function(user_items) {
+item_diversity_function <- function(user_items) {
   similarities_matrix <- similarity(train_set_matrix[,user_items], method = 'cosine',which='items')
 
-  mean(similarities_matrix)
+  (1 - mean(similarities_matrix))
 }
 ```
 
 I then apply the function to the list of recommendations. This gives me the average similarity rating for the ten items recommended to each user.
 
 ```{r}
-ubcf_pred_similarities <- sapply(ubcf_pred_list, item_sim_function)
-ibcf_pred_similarities <- sapply(ibcf_pred_list, item_sim_function)
-ubcf50_pred_similarities <- sapply(ubcf50_pred_list, item_sim_function)
-ubcf100_pred_similarities <- sapply(ubcf100_pred_list, item_sim_function)
-ubcf200_pred_similarities <- sapply(ubcf200_pred_list, item_sim_function)
-ubcf300_pred_similarities <- sapply(ubcf300_pred_list, item_sim_function)
+ubcf_pred_diversity <- sapply(ubcf_pred_list, item_diversity_function)
+ibcf_pred_diversity <- sapply(ibcf_pred_list, item_diversity_function)
+ubcf50_pred_diversity <- sapply(ubcf50_pred_list, item_diversity_function)
+ubcf100_pred_diversity <- sapply(ubcf100_pred_list, item_diversity_function)
+ubcf200_pred_diversity <- sapply(ubcf200_pred_list, item_diversity_function)
+ubcf300_pred_diversity <- sapply(ubcf300_pred_list, item_diversity_function)
 ```
 
-I then take the average of all the values to aggregate into one metric. I then add this metric to the metrics table.
+I then take the average of all the diversity measure to aggregate into one diversity metric for the model. I then add this metric to the metrics table.
 
 ```{r}
-ubcf_similarity <- mean(ubcf_pred_similarities)
-ibcf_similarity <- mean(ibcf_pred_similarities)
-ubcf50_similarity <- mean(ubcf50_pred_similarities)
-ubcf100_similarity <- mean(ubcf100_pred_similarities)
-ubcf200_similarity <- mean(ubcf200_pred_similarities)
-ubcf300_similarity <- mean(ubcf300_pred_similarities)
+ubcf_diversity <- mean(ubcf_pred_diversity)
+ibcf_diversity <- mean(ibcf_pred_diversity)
+ubcf50_diversity <- mean(ubcf50_pred_diversity)
+ubcf100_diversity <- mean(ubcf100_pred_diversity)
+ubcf200_diversity <- mean(ubcf200_pred_diversity)
+ubcf300_diversity <- mean(ubcf300_pred_diversity)
 ```
 
 ```{r}
@@ -218,35 +222,91 @@ metrics_table <- as.data.frame(metrics_table)
 ```
 
 ```{r}
-similarity_values <- c(
-  ubcf    = ubcf_similarity,
-  ibcf    = ibcf_similarity,
-  ubcf50  = ubcf50_similarity,
-  ubcf100 = ubcf100_similarity,
-  ubcf200 = ubcf200_similarity,
-  ubcf300 = ubcf300_similarity
+diversity_values <- c(
+  ubcf    = ubcf_diversity,
+  ibcf    = ubcf_diversity,
+  ubcf50  = ubcf50_diversity,
+  ubcf100 = ubcf100_diversity,
+  ubcf200 = ubcf200_diversity,
+  ubcf300 = ubcf300_diversity
 )
 
 metrics_table <- cbind(
   metrics_table,
-  similarity = similarity_values[rownames(metrics_table) ]
+  diversity = diversity_values[rownames(metrics_table) ]
 )
+```
+
+### Novelty
+
+An additional metric I will consider is Novelty, which measures the popularity of the items recommended (with a higher novelty score corresponding to recommendations of less popular items).
+
+This can be calculated by calculating the amount of ratings for each item and dividing it by the max amount of ratings for an item, resulting in a normalized popularity score. The novelty of the item would be one minus the popularity.
+
+First, I calculate the normalized popularity of all the items in the training set:
+
+```{r}
+item_popularity <- colCounts(train_set_matrix)/max(colCounts(train_set_matrix))
+```
+
+Next, I create a function that calculates the aggregated novelty of the items recommended to a user
+
+```{r}
+item_novelty_function <- function(user_items) {
+ 1 - mean(item_popularity[user_items])
+}
+```
+
+I then calculate the novelty of all the recommendations for each model and add it to the metrics table
+
+```{r}
+#novelty of recommendations for all users in each model
+ubcf_pred_novelty <- sapply(ubcf_pred_list, item_novelty_function)
+ibcf_pred_novelty <- sapply(ibcf_pred_list, item_novelty_function)
+ubcf50_pred_novelty <- sapply(ubcf50_pred_list, item_novelty_function)
+ubcf100_pred_novelty <- sapply(ubcf100_pred_list, item_novelty_function)
+ubcf200_pred_novelty <- sapply(ubcf200_pred_list, item_novelty_function)
+ubcf300_pred_novelty <- sapply(ubcf300_pred_list, item_novelty_function)
+
+#aggregate novelty measure for each model
+ubcf_novelty <- mean(ubcf_pred_novelty)
+ibcf_novelty <- mean(ibcf_pred_novelty)
+ubcf50_novelty <- mean(ubcf50_pred_novelty)
+ubcf100_novelty <- mean(ubcf100_pred_novelty)
+ubcf200_novelty <- mean(ubcf200_pred_novelty)
+ubcf300_novelty <- mean(ubcf300_pred_novelty)
+
+#adding to metrics table
+novelty_values <- c(
+  ubcf    = ubcf_novelty,
+  ibcf    = ibcf_novelty,
+  ubcf50  = ubcf50_novelty,
+  ubcf100 = ubcf100_novelty,
+  ubcf200 = ubcf200_novelty,
+  ubcf300 = ubcf300_novelty
+)
+
+metrics_table <- cbind(
+  metrics_table,
+  novelty = novelty_values[rownames(metrics_table) ]
+)
+
 ```
 
 ## Evaluation
 
 ```{r}
 metrics_table |> select(precision, recall,
-                        FPR, similarity)
+                        FPR, diversity, novelty)
 ```
 
 The table above shows the performance metrics for the models. Interestingly, user based collaborative filtering with the largest user neighborhood size (300) had the highest precision (the proportion of all of the model's classifications that are actually positive). In the context of recommendations, this means that the ubcf300 model, with a precision of 0.68, had nearly 70% of its recommendations rated positively by the user. This model also had the highest recall (proportion of all actual positives that were classified correctly as positives), or in this context, this is the percentage of all positively rated jokes by the user that the model recommended.
 
-However, while the ubcf300 model had the best performance metrics, it had the worst diversity, as its similarity rating of recommendations was the highest. Conversely, the model with the worst accuracy performance metrics had the most diversity (ubcf with a similarity of 0.68).
+However, while the ubcf300 model had the best performance metrics, it had the worst diversity (its average item similarity was the highest). Conversely, the model with the worst accuracy performance metrics had the most diversity (ubcf with a diversity of 0.31). Similarly, novelty decreased as precision increased, though at a greater rate than the diversity metric. The ubcf300 model had the worst novelty (0.12), meaning it was recommending much more popular items than the ubcf and ibcf models.
 
-This result is different from what I initially suspected (worse performance but better diversity with larger neighborhoods). It seems that the smaller neighborhoods were overfitting the data (high variance, low bias) and the tipping point were performance degrades with larger neighborhood sizes was not yet reached.
+This result is different from what I initially suspected (worse performance but better diversity with larger neighborhoods). It seems that the smaller neighborhoods were overfitting the data (high variance, low bias) and the tipping point where performance degrades with larger neighborhood sizes was not yet reached.
 
-Interestingly, while ubcf300 had the worst diversity (nearly 25%, 1 minus the similarity), this is close to the 30% value that was mentioned in "Recommender systems: from algorithms to user experience" as the degree of moderate diversity that users prefer in their recommendation list. Thus, I would recommend the ubcf300 model as it had the best performance while still having a near optimal degree of diversity. However, one drawback of the recommenderlab approach to topN recommendations is that by converting it to a binary classifying problem (likes vs did not like), the recommender is not considering how much a user liked or disliked an item (i.e., it is treating extremely good and extremely bad recommendations the same).
+Interestingly, while ubcf300 had the worst diversity (nearly 25%), this is close to the 30% value that was mentioned in "Recommender systems: from algorithms to user experience" as the degree of moderate diversity that users prefer in their recommendation list (though its possible that diversity in the paper was measured differently). Thus, I would recommend the ubcf300 model as it had the best performance while still having a near optimal degree of diversity. However, the model had the worst novelty, which could be a problem from a user experience perspective if users are interested in finding less known jokes. An additional drawback is that the recommenderlab approach to topN recommendations is converting it to a binary classifying problem (likes vs did not like), the recommender is not considering how much a user liked or disliked an item (i.e., it is treating extremely good and extremely bad recommendations the same). The novelty metric also does not differentiate between jokes that are popular because they are good, versus jokes that are popular because they are bad (i.e., quantity does not equal quality).
 
 The ability to incorporate randomness or diversity directly into a recommender in the recommenderlab package is somewhat limited. Thus, future projects that seek to incorporate diversity directly into the model would likely be better off building the recommenders from scratch.
 
