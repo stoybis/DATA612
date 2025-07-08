@@ -1,0 +1,270 @@
+---
+title: "Project5"
+author: "Semyon Toybis"
+format: html
+editor: visual
+---
+
+## Project 5
+
+Project 5 requires implementing a recommendation system via Apache Spark in order to evaluate if there is an improvement in computational efficiency.
+
+## Apache Spark
+
+Apache Spark is an open-source system for utilizing clustering in machine learning to efficiently handle large data sets. Spark distributes workflow processes across clusters of computers (known as parallelism) which results in performance efficiency when compared to running process sequentially on one core. The key to Spark's efficiency is that Spark processes and keeps data in memory (as opposed to reading/writing from/to disk).
+
+Spark works by utilizing the Spark Driver, which is the primary node that controls the cluster manager. In simpler terms, the Spark Driver is responsible for coordinating among all of the clusters that are used to store and process data. When working with data frames, Spark partitions the data frames across different clusters (known as resilient distributed data sets, or RDDs) in parallel and users are able to perform transformations and actions on the data. Spark uses directed acyclic graphs (DAGs) to schedule tasks and assign work across nodes to improve efficiency and execution by reducing unnecessary data shuffling.[^1]
+
+[^1]: <https://www.ibm.com/think/topics/apache-spark>
+
+For this assignment, I will work on the Jester5k data set, which I previously worked with for [Project 4](https://rpubs.com/stoybis/DATA612Project4)
+
+```{r, message=FALSE}
+library(tidyverse)
+library(recommenderlab)
+```
+
+```{r}
+data("Jester5k")
+```
+
+## Recommenderlab
+
+First, I will create a recommendation system via the recommenderlab package in R, using the Alternating Least Squares (ALS) approach. ALS seeks to approximate the ratings matrix as a product of two smaller matrices, U and P. The optimal values are determined by holding one matrix (U) constant and finding values for the other matrix (P) that minimize the squared errors between the approximated matrix and the original matrix. Then, the matrix P is held constant at the optimal values and matrix U is optimized for values that minimize the squared errors. These matrices have rows corresponding to the users/items and columns corresponding to latent factors, which can be thought of as concepts (e.g. for movies a latent factor might represent a genre while another latent factor may capture the budget of a movie). Accordingly, these matrices capture how users and items rate on these latent factors and finding the dot product can approximate or predict how a user would rate an item. ALS works well with parallelization as the system computes the U and P matrices independently.[^2]
+
+[^2]: <https://datajobs.com/data-science-repo/Recommender-Systems-%5BNetflix%5D.pdf>
+
+Below I create the recommender via recommenderlab. I start with an evaluation scheme that splits the data into train and test sets.
+
+```{r}
+set.seed(123)
+
+
+eval_scheme <- evaluationScheme(Jester5k, method = 'split',
+                                train = 0.8, given = 10, goodRating=0)
+```
+
+I capture the train, test, and evaluation sets as data frames that I will later use in Spark.
+
+```{r}
+train_set <- getData(eval_scheme, 'train')
+train_set_df <- as(train_set, 'data.frame')
+
+test_set <- getData(eval_scheme, 'known')
+test_set_df <- as(test_set, 'data.frame')
+
+eval_set <- getData(eval_scheme, 'unknown')
+eval_set_df <- as(eval_set, 'data.frame')
+
+```
+
+Below are the parameters for the ALS recommender:
+
+```{r}
+recommenderRegistry$get_entry("ALS", dataType = "realRatingMatrix")
+```
+
+Lambda is a penalty parameter that is used to prevent overfitting. n_factors specifies how many latent factors to include in the matrices U and P (corresponding to the number of columns in U and rows in P). Similar to SVD, a larger number of latent factors corresponds to a closer approximation of the original matrix; however, latent factors with low explanatory power can be dropped while still having a close representation of the original matrix. n_iterations corresponds to the number of times the algorithm will optimize the underlying matrices for a reduction in squared errors. Lastly, min_item_nr is the minimum number of interactions an item must have before using its factor for prediction (otherwise, the global average is used).
+
+I will start with the default values and below I capture the run time.
+
+```{r}
+start_time <- Sys.time()
+
+als_recommenderlab <- Recommender(getData(eval_scheme, 'train'),'ALS',
+                                  parameter=list(normalize='center',
+                                                 n_factors = 10,
+                                                 min_item_nr = 1,
+                                                 seed=123))
+  
+  
+end_time <- Sys.time()
+
+als_recommenderlab_run_time <- end_time - start_time
+```
+
+```{r}
+als_recommenderlab_run_time
+```
+
+Next, I predict the ratings in the test set and capture the run time.
+
+```{r}
+start_time <- Sys.time()
+
+als_recommernderlab_predictions <- predict(als_recommenderlab, getData(eval_scheme, 'known'), type = 'ratings')
+
+end_time <- Sys.time()
+
+als_recommenderlab_predict_run_time <- end_time - start_time
+```
+
+```{r}
+als_recommenderlab_predict_run_time
+```
+
+Below are the accuracy metrics
+
+```{r}
+als_recommenderlab_metrics <- calcPredictionAccuracy(als_recommernderlab_predictions, getData(eval_scheme,'unknown'))
+```
+
+```{r}
+als_recommenderlab_metrics
+```
+
+## Spark
+
+Next, I will implement the ALS recommender via Spark, which has built in machine learning algorithms including ALS for recommendations.[^3] For this assignment, I will connect to Spark in local mode, which parallelizes across the cores available on the local machine as opposed to parallelizing across multiple servers.
+
+[^3]: <https://rstudio.github.io/cheatsheets/html/sparklyr.html#modeling>
+
+```{r, message = FALSE}
+library(sparklyr)
+```
+
+```{r}
+sc <- spark_connect(master='local')
+```
+
+Next, I copy the required data frames into Spark. Spark's framework for recommendation algorithms works differently than recommenderlab in that there is no known set (used in recommenderlab for the algorithm to learn about a user preferences in the test set for a given amount of items) and unknown evaluation set (where recommenderlab predicts ratings or recommendations and compares to actual values). Thus, I will combine the train and test set from recommenderlab and the "unknown" evaluation set will be the test set.
+
+```{r}
+train_set_spark <- rbind(train_set_df, test_set_df)
+```
+
+```{r}
+train_set_tbl <- copy_to(sc, train_set_spark, 'train_set', overwrite = TRUE)
+eval_set_tbl <- copy_to(sc, eval_set_df, 'eval_set', overwrite = TRUE)
+```
+
+Spark requires numeric values for user and item IDs, which I create below.
+
+```{r}
+train_set_tbl <- train_set_tbl |> ft_string_indexer(input_col = 'user',output_col = 'user_id')
+
+train_set_tbl <- train_set_tbl |> ft_string_indexer(input_col = 'item',output_col = 'item_id')
+```
+
+Next, I match the IDs from the train set user and items to the test set user and items:
+
+```{r}
+user_ids <- train_set_tbl |> select(user, user_id) |> distinct()
+item_ids <- train_set_tbl |> select(item, item_id) |> distinct()
+```
+
+```{r}
+eval_set_tbl <- eval_set_tbl |> left_join(user_ids, by ='user') |>
+  left_join(item_ids, by ='item')
+```
+
+Next, I fit the ALS model on the training data. I use the same parameters for number of factors and the cost parameter.
+
+```{r}
+
+start_time <- Sys.time()
+
+als_model <- ml_als(
+  train_set_tbl,
+  rating_col = "rating",
+  user_col   = "user_id",
+  item_col   = "item_id",
+  rank       = 10,
+  reg_param  = 0.1
+)
+
+end_time <- Sys.time()
+
+als_spark_run_time <- end_time - start_time
+
+
+```
+
+I predict the ratings for the test set
+
+```{r}
+start_time <- Sys.time()
+
+spark_als_predictions <- ml_predict(als_model, eval_set_tbl,
+           rating_col = "rating",
+           user_col   = "user_id",
+           item_col   = "item_id")
+
+end_time <- Sys.time()
+
+als_sparklyr_predict_run_time <- end_time - start_time
+```
+
+```{r}
+spark_als_predictions
+```
+
+There are no built in functions for accuracy metrics, so I calculate those manually
+
+```{r}
+spark_als_predictions <- spark_als_predictions |> mutate(squared_error = (prediction - rating)^2)
+
+```
+
+```{r}
+head(spark_als_predictions)
+```
+
+```{r}
+spark_rmse <- spark_als_predictions |> select(squared_error) |> summarise(rmse = sqrt(mean(squared_error)))
+
+```
+
+```{r}
+spark_rmse
+```
+
+```{r}
+local_spark_rmse <- spark_rmse |> collect()
+```
+
+```{r}
+spark_disconnect(sc)
+```
+
+## Comparison
+
+Below is the RMSE of the recommenderlab model and the spark model on the test sets
+
+```{r}
+als_recommenderlab_metrics[1]
+```
+
+```{r}
+local_spark_rmse
+```
+
+Both models have similar RMSE metrics, which makes sense as they had the same parameters (lambda, n_factors). The RMSE is not exactly the same as the training and test sets were slightly different due to the differences between recommenderlab (train set, known set, unknown set) and Spark (train and test set). Additionally, data in the Spark algorithm was not centered to remove user bias, which can be done automatically in recommenderlab via a hyper-parameter.
+
+From a performance efficiency perspective, the run time for training the models was somewhat similar. In fact, the approach via recommenderlab performed somewhat quicker (difference of about three seconds)
+
+```{r}
+als_recommenderlab_run_time
+```
+
+```{r}
+als_spark_run_time
+```
+
+However, implementing via Spark resulted in a notable difference in efficiency (60 seconds faster) when generating predictions:
+
+```{r}
+als_recommenderlab_predict_run_time
+```
+
+```{r}
+als_sparklyr_predict_run_time
+```
+
+Generating predictions via ALS requires calculating each users facor vector. Distributing this process across multiple cores leads to a performance improvement versus running this process sequentially.
+
+This begs the question on when it would be more appropriate to use a platform like Spark for implementing a recommendation engine pipeline. Spark is designed for big data workloads[^4], so the larger a data set is, the more appropriate using Spark becomes. However, there is a cost to using Spark as there is a cost to running servers on platforms such as Databricks, Azure, or AWS. Using Spark would be necessary for models in production that require near real time results and deal with enormous data-sets. For example, running a recommendation engine for Amazon product recommendations, Netflix movie/show recommendations, or Spotify song recommendations would require Spark. In fact, Spotify has discussed how using Spark led to a meaningful improvement in the efficiency of their recommendation models.[^5] For the purposes of this class, a dataset of one million or more observations could be a good use case for implementing Spark via a free version of a cloud service such as Databricks or Azure. However, this poses an additional challenge Spark's built in recommendation algorithm is limited to ALS. Implementing collaborative filtering, content based filtering, or SVD algorithms within Spark would require building out those algorithms manually rather than using existing libraries and functions.
+
+[^4]: <https://www.databricks.com/glossary/what-is-apache-spark>
+
+[^5]: <https://www.youtube.com/watch?v=3LBgiFch4_g>
